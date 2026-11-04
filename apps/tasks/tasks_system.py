@@ -225,7 +225,7 @@ def execute_db_task(**kwargs) -> dict[str, Any]:
     try:
         from apps.core.logging_control import sync_from_db
 
-        sync_from_db(respect_process_start=False)
+        sync_from_db()
     except Exception as exc:  # noqa: BLE001 - log control must not block task execution
         logger.debug(f"Runtime log level sync skipped: {exc}")
 

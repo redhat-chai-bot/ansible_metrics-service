@@ -106,6 +106,39 @@ def test_process_start_semantics():
 
 
 @pytest.mark.django_db
+def test_restarted_worker_ignores_override_before_inherited_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A restarted worker keeps baseline logging while executing its first task."""
+    from apps.tasks.models import Task, TaskExecution
+    from apps.tasks.tasks_system import execute_db_task
+
+    monkeypatch.setattr(logging_control, "BASELINE_LEVEL", "INFO")
+    logging_control.revert()
+    override = logging_control.set_override("DEBUG", ttl_seconds=60)
+    worker_started_at = timezone.now() - timedelta(minutes=1)
+    override_modified_at = worker_started_at - timedelta(minutes=1)
+    RuntimeLogLevelOverride.objects.filter(pk=override.pk).update(modified=override_modified_at)
+    override.refresh_from_db()
+    assert override.modified < worker_started_at < timezone.now() < override.expires_at
+
+    monkeypatch.setenv(logging_control.PROCESS_STARTED_ENV, worker_started_at.isoformat())
+    monkeypatch.setattr(logging_control, "_PROCESS_STARTED_AT", override_modified_at - timedelta(minutes=1))
+    monkeypatch.setattr(logging_control, "_PROCESS_STARTED_AT_READY", False)
+    logging_control.reset_throttle()
+    task = Task.objects.create(name="restarted_worker_task", function_name="hello_world", task_data={})
+
+    result = execute_db_task(task_id=task.id)
+
+    assert result["status"] == "success"
+    task.refresh_from_db()
+    assert task.status == "completed"
+    assert TaskExecution.objects.get(task=task).status == "completed"
+    assert logging_control.process_started_at() == worker_started_at
+    assert logging_control._APPLIED_LEVEL is None
+    for name in MANAGED:
+        assert logging.getLogger(name).level == logging.INFO
+
+
+@pytest.mark.django_db
 def test_sync_swallows_database_errors(monkeypatch):
     def boom():
         raise RuntimeError("database is down")
